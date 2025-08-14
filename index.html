@@ -1,0 +1,231 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+<title>Mobile Karaoke LRC</title>
+<style>
+  :root { --pad: 16px; }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    background: #000;
+    color: #fff;
+    font-family: system-ui, -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    text-align: center;
+    display: flex;
+    flex-direction: column;
+    height: 100vh;
+    justify-content: space-between;
+    background-image: url('songs/bg.jpg');
+    background-size: cover;
+    background-position: center;
+    background-repeat: no-repeat;
+  }
+  .lyrics {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    justify-content: center;
+    gap: 12px;
+    padding: var(--pad);
+  }
+  .current-line {
+    font-size: 1.6rem;
+    font-weight: 700;
+    min-height: 3.2rem;
+    letter-spacing: 0.2px;
+    word-wrap: break-word;
+    white-space: normal;
+  }
+  .next-line {
+    opacity: 0.75;
+    font-size: 1.1rem;
+    min-height: 1.6rem;
+  }
+  .progress {
+    height: 4px;
+    background: rgba(255,255,255,0.18);
+    border-radius: 999px;
+    overflow: hidden;
+    margin-top: 4px;
+  }
+  .progress-bar {
+    height: 100%;
+    width: 100%;
+    transform: scaleX(0);
+    transform-origin: left;
+    background: rgba(255,255,255,0.9);
+    transition: transform 0.08s linear; /* small smoothing */
+  }
+  .controls { padding: var(--pad); }
+  button {
+    width: 64px; height: 64px; border-radius: 50%; border: none;
+    background: rgba(255,255,255,0.18);
+    color: #fff; font-size: 1.5rem; box-shadow: 0 6px 18px rgba(0,0,0,0.35);
+    display: inline-flex; align-items: center; justify-content: center;
+  }
+  button:active { transform: scale(0.98); }
+</style>
+</head>
+<body>
+  <div class="lyrics">
+    <div class="current-line" id="currentLine"></div>
+
+    <div class="progress" aria-hidden="true">
+      <div class="progress-bar" id="lineProgress"></div>
+    </div>
+
+    <div class="next-line" id="nextLine"></div>
+  </div>
+
+  <div class="controls">
+    <button id="playBtn">▶</button>
+  </div>
+
+<script>
+  const playBtn = document.getElementById('playBtn');
+  const currentLineEl = document.getElementById('currentLine');
+  const nextLineEl = document.getElementById('nextLine');
+  const lineProgressEl = document.getElementById('lineProgress');
+
+  const embeddedLyrics = `
+[id: pshlpivu]
+[ar: John Denver]
+[al: Legendary [Disc 1]]
+[ti: Take Me Home Country Roads]
+[length: 03:18]
+
+[00:05.83]Almost heaven, West Virginia
+[00:11.44]Blue Ridge Mountains, Shenandoah River
+[00:17.92]
+[00:20.32]Life is old there, older than the trees
+[00:24.71]Younger than the mountains, growin' like a breeze
+[00:29.69]Country roads, take me home
+[00:35.71]To the place I belong
+[00:41.43]West Virginia, Mountain Mama
+[00:47.18]Take me home, country roads
+[00:53.75]All my memories gather 'round her
+[00:59.42]Miner's lady, stranger to blue water
+[01:07.52]Dark and dusty, painted on the sky
+[01:12.49]Misty taste of moonshine, teardrops in my eyes
+[01:17.99]Country roads, take me home
+[01:23.11]To the place I belong
+[01:29.34]West Virginia, Mountain Mama
+[01:35.07]Take me home, country roads
+[01:41.37]I hear her voice, in the mornin' hour she calls me
+[01:47.50]Radio reminds me of my home far away
+[01:53.43]Drivin' down the road, I get a feelin'
+[01:56.79]That I should have been home yesterday, yesterday
+[02:04.38]Country roads, take me home
+[02:10.26]To the place I belong
+[02:15.94]West Virginia, Mountain Mama
+[02:21.64]Take me home, country roads, everybody sing
+[02:27.74]Country roads, take me home
+[02:33.37]To the place I belong
+[02:39.55]West Virginia, Mountain Mama
+[02:45.59]Take me home, country roads
+[02:51.28]Take me home down country roads
+[02:56.94]Take me home down country roads
+[03:00.99]
+`;
+
+  let lyrics = parseLRC(embeddedLyrics);
+  let idx = -1;       // current index shown in UI
+  let rafId = null;
+  let startTime = null;
+
+  function parseLRC(text) {
+    const lines = text.split(/\r?\n/);
+    const out = [];
+    for (let i = 0; i < lines.length; i++) {
+      const m = lines[i].match(/\[(\d{2}):(\d{2}\.\d{2})\](.*)/);
+      if (m) {
+        const min = parseInt(m[1], 10);
+        const sec = parseFloat(m[2]);
+        out.push({ time: min * 60 + sec, text: m[3].trim() });
+      }
+    }
+    return out;
+  }
+
+  // NEW: non-mutating lookup. Returns index (0..N-1) of the last lyric <= t, or -1 if none.
+  function findIndexForTime(t) {
+    // simple linear search from end (cheap for short LRCs). This does NOT change idx.
+    for (let j = lyrics.length - 1; j >= 0; j--) {
+      if (lyrics[j].time <= t) return j;
+    }
+    return -1;
+  }
+
+  // Always update the next-line text so it reliably updates as the current line changes.
+  function updateUIForIndex(i) {
+    if (i < 0) {
+      currentLineEl.textContent = '';
+    } else {
+      currentLineEl.textContent = lyrics[i]?.text || '';
+    }
+    // ALWAYS set the next line (empty string if none)
+    nextLineEl.textContent = lyrics[i + 1]?.text || '';
+
+    // reset progress for new line
+    if (lineProgressEl) lineProgressEl.style.transform = 'scaleX(0)';
+  }
+
+  function loop() {
+  const t = (Date.now() - startTime) / 1000;
+  const i = findIndexForTime(t);
+
+  // Detect new line change (including first line starting)
+  if (i !== idx) {
+    idx = i;
+    updateUIForIndex(i);
+  }
+
+  // Handle progress bar:
+  if (i >= 0 && lyrics[i]) {
+    // We're inside a lyric
+    const nextTime = lyrics[i + 1]?.time ?? (lyrics[i].time + 2);
+    const duration = Math.max(0.001, nextTime - lyrics[i].time);
+    const elapsed = Math.max(0, t - lyrics[i].time);
+    const progress = Math.min(1, elapsed / duration);
+    if (lineProgressEl) lineProgressEl.style.transform = `scaleX(${progress})`;
+
+  } else {
+    // Before the first lyric starts: run progress from 0 → 1 until first lyric time
+    const firstLyricTime = lyrics[0]?.time ?? 0;
+    const elapsedBefore = Math.max(0, t);
+    const progressBefore = Math.min(1, elapsedBefore / firstLyricTime);
+    if (lineProgressEl) lineProgressEl.style.transform = `scaleX(${progressBefore})`;
+  }
+
+  rafId = requestAnimationFrame(loop);
+}
+
+
+  playBtn.addEventListener('click', () => {
+    if (rafId) {
+      // Stop / reset
+      cancelAnimationFrame(rafId);
+      rafId = null;
+      idx = -1;
+      currentLineEl.textContent = '';
+      nextLineEl.textContent = '';
+      if (lineProgressEl) lineProgressEl.style.transform = 'scaleX(0)';
+      playBtn.textContent = '▶';
+    } else {
+      // Start from the top (simple start; does not support resume)
+      startTime = Date.now();
+      idx = -1;
+      updateUIForIndex(-1); // preload first upcoming line
+      rafId = requestAnimationFrame(loop);
+      playBtn.textContent = '⏸';
+    }
+  });
+
+  // Optionally: expose a function to start at an arbitrary time (useful for testing)
+  // function seekTo(seconds) { startTime = Date.now() - seconds * 1000; idx = -1; updateUIForIndex(-1); }
+
+</script>
+</body>
+</html>
